@@ -1,117 +1,186 @@
 package main
-import(
-	"io/ioutil"
+import (
 	"encoding/json"
-	"time"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
-	"github.com/gorilla/mux"
-	"github.com/gorilla/handlers"
-	"JSMPJ_jwt/models"
 	"strings"
+	"time"
+	"github.com/codegangsta/negroni"
 	"github.com/dgrijalva/jwt-go"
+	)
 	"github.com/dgrijalva/jwt-go/request"
-)
-const (
-	privKeyPath="app.rsa"
-	pubKeyPath="app.rsa.pub"
-)
-type UserCredentials struct{
-	UserName string `json:"username"`
-	Password string `json:"password"`
-}
-var VerifyKey, SignKey []byte
-func LoginHandler(w http.ResponseWriter, r *http.Request){
-	var user UserCredentials
-	err:= json.NewDecoder(r.Body).Decode(&user)
-	if err != nil{
-		w.WriteHeader(http.StatusForbidden)
-		fmt.Fprintf(w,"Error in request")
+	//RSA KEYS AND INITIALISATION
+	const (
+	privKeyPath = "app.rsa"
+	pubKeyPath = "app.rsa.pub"
+	)
+	var VerifyKey, SignKey []byte
+	
+	func initKeys() {
+	var err error
+	
+	SignKey, err = ioutil.ReadFile(privKeyPath)
+	if err != nil {
+		log.Fatal("Error reading private key")
 		return
 	}
-	fmt.Println(user.UserName, user.Password)
-	if strings.ToLower(user.UserName) != "alexcons"{
-		if user.Password != "kappa123"{
-			w.WriteHeader(http.StatusForbidden)
-			fmt.Println("Error in logging")
-			fmt.Fprint(w,"Invalid Credentials")
-		}
+	
+	VerifyKey, err = ioutil.ReadFile(pubKeyPath)
+	if err != nil {
+		log.Fatal("Error reading public key")
+		return
 	}
-	signer := jwt.New(jwt.GetSigningMethod("RS256"))
-	claims := make(jwt.MapClaims)
-	claims["iss"] = "admin"
-	claims["exp"] = time.Now().Add(time.Minute * 20).Unix()
-	claims["CustomUserInfo"] = struct {
-		Name string
-		Role string
-	}{user.UserName, "Member"}
-	signer.Claims = claims
-	tokenString, err := signer.SignedString(SignKey)
-	if err != nil{
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintln(w,"Error while signin token")
-		log.Printf("Error signing token : %v\n",err)
 	}
 	
-	JsonResponse(tokenString,w)
-
-}
-func initKeys(){
-	var err error
-	SignKey, err = ioutil.ReadFile(privKeyPath)
-	if err != nil{
-		log.Fatal("Error in reading private key")
+	//STRUCT DEFINITIONS
+	
+	type UserCredentials struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 	}
-	VerifyKey, err = ioutil.ReadFile(pubKeyPath)
-	if err != nil{
-		log.Fatal("Error in reading public key")
+	
+	type User struct {
+	ID int `json:"id"`
+	Name string `json:"name"`
+	Username string `json:"username"`
+	Password string `json:"password"`
 	}
-}
-func ValidateTokenMiddleware(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
-
-	//validate token
-token, err := request.ParseFromRequest(r, request.AuthorizationHeaderExtractor,
-	func(token *jwt.Token) (interface{}, error) {
-		return VerifyKey, nil
+	
+	type Response struct {
+	Data string `json:"data"`
+	}
+	
+	type Token struct {
+	Token string `json:"token"`
+	}
+	
+	//SERVER ENTRY POINT
+	
+	func StartServer() {
+	
+	//PUBLIC ENDPOINTS
+	http.HandleFunc("/login", LoginHandler)
+	
+	//PROTECTED ENDPOINTS
+	http.Handle("/resource/", negroni.New(
+		negroni.HandlerFunc(ValidateTokenMiddleware),
+		negroni.Wrap(http.HandlerFunc(ProtectedHandler)),
+	))
+	
+	log.Println("Now listening...")
+	http.ListenAndServe(":8000", nil)
+	
+	}
+	
+	func main() {
+	
+	initKeys()
+	StartServer()
+	
+	}
+	
+	//////////////////////////////////////////
+	
+	/////////////ENDPOINT HANDLERS////////////
+	
+	/////////////////////////////////////////
+	
+	func ProtectedHandler(w http.ResponseWriter, r *http.Request) {
+	
+	response := Response{"Gained access to protected resource"}
+	JsonResponse(response, w)
+	
+	}
+	
+	func LoginHandler(w http.ResponseWriter, r *http.Request) {
+	
+	var user UserCredentials
+	
+	//decode request into UserCredentials struct
+	err := json.NewDecoder(r.Body).Decode(&user)
+	if err != nil {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprintf(w, "Error in request")
+		return
+	}
+	
+	fmt.Println(user.Username, user.Password)
+	
+	//validate user credentials
+	if strings.ToLower(user.Username) != "alexcons" {
+		if user.Password != "kappa123" {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Println("Error logging in")
+			fmt.Fprint(w, "Invalid credentials")
+			return
+		}
+	}
+	
+	//create a rsa 256 signer
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss": "admin",
+		"exp": time.Now().Add(time.Minute * 20).Unix(),
+		"CustomUserInfo": struct {
+			Name string
+			Role string
+		}{user.Username, "Member"},
 	})
 
-if err == nil {
-
-	if token.Valid {
-		next(w, r)
+tokenString, err := token.SignedString(SignKey)
+	fmt.Println(tokenString)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintln(w, "Error while signing the token")
+		log.Printf("Error signing token: %v\n", err)
+		
+	}
+	
+	//create a token instance using the token string
+	response := Token{tokenString}
+	fmt.Println(tokenString)
+	JsonResponse(response, w)
+	
+	}
+	
+	//AUTH TOKEN VALIDATION
+	
+	func ValidateTokenMiddleware(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	
+	//validate token
+	token, err := request.ParseFromRequest(r, request.AuthorizationHeaderExtractor,
+		func(token *jwt.Token) (interface{}, error) {
+			return VerifyKey, nil
+		})
+	
+	if err == nil {
+	
+		if token.Valid {
+			next(w, r)
+		} else {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, "Token is not valid")
+		}
 	} else {
 		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, "Token is not valid")
+		fmt.Fprint(w, "Unauthorised access to this resource")
 	}
-} else {
-	w.WriteHeader(http.StatusUnauthorized)
-	fmt.Fprint(w, "Unauthorised access to this resource")
-}
-}
-
-//HELPER FUNCTIONS
-func JsonResponse(response interface{}, w http.ResponseWriter) {
-
-	json, err :=  json.Marshal(response)
+	
+	}
+	
+	//HELPER FUNCTIONS
+	
+	func JsonResponse(response interface{}, w http.ResponseWriter) {
+	
+	json, err := json.Marshal(response)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	
 	w.WriteHeader(http.StatusOK)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(json)
-}
-
-func handler(){
-  origins:=handlers.AllowedOrigins([]string{"*"})
-  methods:=handlers.AllowedMethods([]string{"GET","PUT","POST","DELETE"})
-  newRouter:=mux.NewRouter()
-  newRouter.HandleFunc("/",models.HomePage).Methods("GET")
-  log.Fatal(http.ListenAndServe(":8000",handlers.CORS(origins,methods)(newRouter)))
-}
-func main(){
-fmt.Println("JSMPJ Corporation Server is active now.....")
-initKeys()
-handler()
-}
+	
+	}
