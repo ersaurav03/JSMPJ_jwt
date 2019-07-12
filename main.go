@@ -11,6 +11,7 @@ import(
 	"JSMPJ_jwt/models"
 	"strings"
 	"github.com/dgrijalva/jwt-go"
+	"github.com/dgrijalva/jwt-go/request"
 )
 const (
 	privKeyPath="app.rsa"
@@ -52,8 +53,8 @@ func LoginHandler(w http.ResponseWriter, r *http.Request){
 		fmt.Fprintln(w,"Error while signin token")
 		log.Printf("Error signing token : %v\n",err)
 	}
-	response := Token{tokenString}
-	JsonResponse(response,w)
+	
+	JsonResponse(tokenString,w)
 
 }
 func initKeys(){
